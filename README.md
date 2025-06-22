@@ -4,4 +4,4 @@ Vieille simulation en WebGL de l'équation 2D de Shrodinger pour un potentiel ha
 
 X pour commencer
 
-démo https://jeanbombeurre.github.io/shrodinger2D/index.html
+démo https://jeanbombeurre.github.io/shrodinger2D/shrodinger2D(1).html
