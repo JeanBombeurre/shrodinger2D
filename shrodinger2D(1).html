@@ -1,0 +1,333 @@
+<!DOCTYPE html><html>
+<body style=background-color:lightgrey; >
+<center><canvas id="canvas" style="background-color:purple;" width=1024 height=512></canvas><br/><div id="inu"></div><div id="fps"></div>
+</center>
+<script>
+document.onkeydown=e=>{if(e.key=="x" && (go=!go)) main()}
+function copy(e){return JSON.parse(JSON.stringify(e))}
+const vs=`#version 300 es
+in vec4 pos;
+void main(){
+	gl_Position=pos;
+}`
+const canvas=document.getElementById("canvas")
+const gl=canvas.getContext("webgl2")
+gl.getExtension('EXT_color_buffer_float');//pour pouvoir render des textures float IMPORTANT c'était dur à trouver
+const globalFramebuffer=gl.createFramebuffer()
+const globalVertex=createShader(gl, gl.VERTEX_SHADER, vs);
+const gposBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, gposBuffer);
+const globalPos=[		-1, -1,		-1, 1,		1, 1,		-1,-1,		1,1,		1,-1];
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(globalPos), gl.STATIC_DRAW);
+
+
+const width=500
+const height=500
+document.getElementById("canvas").setAttribute("width",width)
+document.getElementById("canvas").setAttribute("height",height)
+
+
+function createShader(gl, type, source) {
+  var shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  var success = gl.getShaderParameter(shader, gl.COMPILE_STATUS);
+  if (success) return shader;
+  console.log(gl.getShaderInfoLog(shader));  // eslint-disable-line
+  gl.deleteShader(shader);
+  return undefined;
+}
+function createProgram(gl, vertexShader, fragmentShader) {
+  var program = gl.createProgram();
+  gl.attachShader(program, vertexShader);
+  gl.attachShader(program, fragmentShader);
+  gl.linkProgram(program);
+  var success = gl.getProgramParameter(program, gl.LINK_STATUS);
+  if (success) return program;
+  console.log(gl.getProgramInfoLog(program));  // eslint-disable-line
+  gl.deleteProgram(program);
+  return undefined;
+}
+function createTex(w,h,internalFormat=gl.R16F,format=gl.RED,type=gl.FLOAT){//combinaisons : https://www.khronos.org/registry/webgl/specs/latest/2.0/#TEXTURE_TYPES_FORMATS_FROM_DOM_ELEMENTS_TABLE
+	let tex=gl.createTexture()
+	gl.bindTexture(gl.TEXTURE_2D,tex)
+	gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat,w, h, 0,format, type, null);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+	return tex
+}
+class Action{// action Fragment shader
+	constructor(fs,args,prec="highp"){//ex args : ["sampler2D tex1","sampler2D tex2", "float inu","sampler2D self"]
+		this.args={}
+		this.nargs=args.length
+		for(let i=0;i<args.length;i++) this.args[args[i].split(" ")[1]]=args[i].split(" ")[0]
+		this.fs="#version 300 es\nprecision "+prec+" float;\n"+fs
+		console.log(this.fs)
+		this.fragmentShader=createShader(gl,gl.FRAGMENT_SHADER,this.fs)
+		this.prog=createProgram(gl,globalVertex,this.fragmentShader);
+		this.posLocation=gl.getAttribLocation(this.prog,"pos")
+		this.uniLoc={}
+		for(let i in this.args){
+			this.uniLoc[i]=gl.getUniformLocation(this.prog,i)
+			if(this.uniLoc[i]===null) console.warn("anntention null uniform location (peut indiquer qu'il n'est pas utilisé dans le shader) : ",i)
+		}
+	}
+	apply(target,args,toCanvas=false){//target : une Tex avec un framebuffer ==== {width:int,height:int,target:glTEXTURE2D}
+		gl.enableVertexAttribArray(this.posLocation);
+		gl.vertexAttribPointer(this.posLocation, 2, gl.FLOAT, false, 0,0);
+		gl.viewport(0, 0, toCanvas?gl.canvas.width:target.width, toCanvas?gl.canvas.height:target.height);
+		gl.useProgram(this.prog);
+		//set args
+		let nTex=0
+		for(let i in this.args){
+			if(args[i]===undefined)console.warn("argument missing : ",i)
+			if(this.args[i]=="sampler2D" || this.args[i]=="isampler2D"){
+				gl.activeTexture(gl.TEXTURE0+nTex)
+				if(!args[i].cache) throw "pas bon argument "+i
+				gl.bindTexture(gl.TEXTURE_2D, args[i].cache);
+				gl.uniform1i(this.uniLoc[i], nTex);
+				nTex++
+			}else if(this.args[i]=="float"){
+				gl.uniform1f(this.uniLoc[i],args[i])
+			}else if(this.args[i]=="ivec2"){//pour les dims
+				gl.uniform2i(this.uniLoc[i],args[i][0],args[i][1])
+			}else if(this.args[i]=="vec2"){
+				console.log(args[i],i)
+				
+				gl.uniform2f(this.uniLoc[i],args[i][0],args[i][1])
+			}else if(this.args[i]=="ivec3"){
+				gl.uniform3i(this.uniLoc[i],args[i][0],args[i][1],args[i][2])
+			}else if(this.args[i]=="int"){
+				gl.uniform1i(this.uniLoc[i],args[i])
+			}else{
+				throw "type pas connu "+this.args[i]
+			}
+		}
+		gl.bindFramebuffer(gl.FRAMEBUFFER,toCanvas?null:globalFramebuffer)
+		if(!toCanvas) gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, target.target, 0);//ATTENTION LE TARGET DOIT AVOIR UNE PROPRIETE target POUR LA CIBLE.
+		if(toCanvas){
+			gl.clearColor(0,0,0, 1);   // clear to black
+			gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+		}else{
+			gl.clearColor(0, 0, 0, 0);
+			gl.clear(gl.COLOR_BUFFER_BIT);
+		}
+		gl.drawArrays(gl.TRIANGLES, 0, 6);
+		
+		if(!toCanvas && target.isClassTex && target.self) target.mt=1-target.mt
+
+	}
+}
+class Tex{
+	static args=[-1,{internalFormat:gl.R16F,format:gl.RED,type:gl.FLOAT},{internalFormat:gl.RG16F,format:gl.RG,type:gl.FLOAT},{internalFormat:gl.RGBA32F,format:gl.RGBA,type:gl.FLOAT}]
+	constructor(dim=1,self=1,w=width,h=height){///SELF : 1 si on peut auto-render sinon 0 pour opti
+		this.width=w
+		this.height=h
+		this.dim=dim
+		this.isClassTex=1
+		this.self=self
+		this.tex=this.self?[createTex(w,h,Tex.args[dim].internalFormat,Tex.args[dim].format,Tex.args[dim].type),createTex(w,h,Tex.args[dim].internalFormat,Tex.args[dim].format,Tex.args[dim].type)]:createTex(w,h,Tex.args[dim].internalFormat,Tex.args[dim].format,Tex.args[dim].type)
+		this.mt=0
+		this.renderSansSwitch=0
+	}
+	get target(){///faux : sur lequel on render
+		//if(this.renderSansSwitch++>1) console.warn("attention ptet que t'as pas switch "+this.renderSansSwitch)
+		return this.self?this.tex[this.mt]:this.tex;
+	}
+	get cache(){return this.self?this.tex[1-this.mt]:this.tex}//cache : vrai.
+	//switch(){this.mt=1-this.mt;this.renderSansSwitch=0}//EST MAINTENANT APPELLE AUTOMATIQUEMENT, TU DOIS PAS LE FAIRE TOI
+	fill(value){//value : une string bout de fragment shader
+		let out=(this.dim==1)?"float":(this.dim==2)?"vec2":"vec4"
+		let fs=`
+out ${out} k;
+void main(){
+ivec2 pos=ivec2(gl_FragCoord.xy);
+k=${value};
+}`
+		new Action(fs,[]).apply(this,{})
+	}
+}
+function getTexel(x,y,tex,type=gl.FLOAT){
+	let fb=gl.createFramebuffer()
+	gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fb);
+   let data = (type==gl.FLOAT)?new Float32Array(4):new Int8Array(4);
+	gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+	gl.readPixels(x, y, 1, 1, gl.RGBA, type, data);//remplacer par gl.RGBA au besoin
+	return [data[0],data[1],data[2],data[3]]///ATTENTION SEULEMENT RED
+}
+function setTexels(tex,x0,y0,w,h,data,format=gl.RGBA,type=gl.FLOAT){//zone rectangulaire
+gl.bindTexture(gl.TEXTURE_2D, tex);
+	gl.texSubImage2D(gl.TEXTURE_2D,0,x0,y0,w,h,format,type,data)
+}
+function fillTex(f,tex,internalFormat=gl.RGB16F,format=gl.RGB,type=gl.FLOAT){
+	let data=new Array(width*height)
+	lop((x,y,i)=>{data[i]=f(x,y,i)})
+	if(type==gl.FLOAT) data=new Float32Array(data)
+	if(type==gl.UNSIGNED_BYTE) data=new Uint8Array(data)
+	if(type==gl.BYTE) data=new Int8Array(data)
+	
+	gl.bindTexture(gl.TEXTURE_2D, tex);
+	gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, width, height, 0,format,type, data);
+}
+function lop(f){
+	let i=0
+	for(let y=0;y<height;y++){
+		for(let x=0;x<width;x++) f(x,y,i++)
+	}
+}
+function getTexel(x,y,tex,type=gl.FLOAT){
+	let fb=gl.createFramebuffer()
+	gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fb);
+   let data = (type==gl.FLOAT)?new Float32Array(4):new Int8Array(4);
+	gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+	gl.readPixels(x, y, 1, 1, gl.RGBA, type, data);//remplacer par gl.RGBA au besoin
+	return [data[0],data[1],data[2],data[3]]///ATTENTION SEULEMENT RED
+}
+
+class Field{
+	constructor(dx=1,dt=1,pot="0.0"){
+		this.w=width
+		this.h=height
+		this.dim=[this.w,this.h]
+		this.dx=dx
+		this.dt=dt
+		this.f=new Tex(2)///////////FIELD
+		this.inu=new Tex(2,0);// intermediaire 
+		this.pot=new Tex(1,0);
+		this.pot.fill(pot)
+		let A="(vec2(100.0,250.0))"
+		let DIR="(-vec2(0.0,10.0)*0.0)"
+		let delta=`(vec2(pos)-${A})/100.0`
+		let ang=`dot(${delta},${DIR})`
+		this.f.fill(`5.0*exp(-dot(${delta},${delta}))*vec2(cos(${ang}),sin(${ang}))`)//CHANGE POUR GAUSSIENNE : z(x,y)=exp(-(pos-A)²+i(pos-A [scalaire=dot] DIR))   avec A le centre et Dir la direction
+		this.k=[]
+		for(let i=0;i<4;i++)this.k.push(new Tex(2));
+		this.addFrac=new Action(`
+uniform sampler2D a;
+uniform sampler2D b;
+uniform float r;
+out vec2 k;
+void main(){
+	ivec2 pos=ivec2(gl_FragCoord.xy);
+	vec2 inu=texelFetch(b,pos,0).xy;
+	k=texelFetch(a,pos,0).xy+r*inu;
+}`,["sampler2D a","sampler2D b","float r"])/////RETURN A+r*B
+		this.renderer=new Action(`
+uniform sampler2D f;
+uniform sampler2D pot;
+out vec4 k;
+void main(){
+	ivec2 pos=ivec2(gl_FragCoord.xy);
+	vec2 me=texelFetch(f,pos,0).xy;///CHANGER LE .x en .y ou en abs si tu veux
+	float inu=length(me);
+	inu=inu;//smoothstep(0.0,0.3,inu);//inu>0.001?1.0:0.0;////CHANGE AUSSI
+	float pinu=texelFetch(pot,pos,0).x;
+	k= vec4(inu,inu,pinu,1.0);
+}`,["sampler2D f","sampler2D pot"])/////composante x
+		this.calcVit=new Action(`
+uniform sampler2D f;
+uniform float dx;
+uniform ivec2 dim;
+uniform sampler2D pot;
+out vec2 k;
+
+vec2 get(int x,int y,vec2 sinon){
+	return (x<0 || y<0 || x>dim.x || y>dim.y)?sinon:texelFetch(f,ivec2(x,y),0).xy;//texelFetch(f,ivec2((x+2*dim.x)%dim.x,(y+2*dim.y)%dim.y),0).xy;//////////////COMPORTEMENT TORIQUE
+}
+vec2 fois(vec2 a,vec2 b){
+	return vec2(a.x*b.x-a.y*b.y,a.x*b.y+a.y*b.x);
+}
+void main(){
+	ivec2 pos=ivec2(gl_FragCoord.xy);
+	int x=pos.x;
+	int y=pos.y;
+	vec2 me=get(x,y,vec2(0.0,0.0));
+	vec2 d2=(get(x,y+1,me)+get(x+1,y,me)+get(x-1,y,me)+get(x,y-1,me)-me*4.0);// ??   /(dx*dx);
+	vec2 v=fois(-0.5*d2 + me*texelFetch(pot,pos,0).x,vec2(0,1.0)) ;
+	k=v*0.3;
+}
+`,["sampler2D f","float dx","ivec2 dim","sampler2D pot"])/////composante x
+		this.rungekutta=new Action(`
+//n=4 (?)
+uniform sampler2D f;//self
+uniform sampler2D k0;
+uniform sampler2D k1;
+uniform sampler2D k2;
+uniform sampler2D k3;
+uniform float dt;
+out vec2 rep;
+vec2 get(ivec2 pos,sampler2D s){
+	return texelFetch(s,pos,0).xy;
+}
+void main(){
+	ivec2 pos=ivec2(gl_FragCoord.xy);
+	rep=get(pos,f)+dt/6.0 * (get(pos,k0)+2.0*get(pos,k1)+2.0*get(pos,k2)+get(pos,k3));
+}
+`,["sampler2D f","sampler2D k0","sampler2D k1","sampler2D k2","sampler2D k3","float dt"])
+		
+	}
+	aff(){
+		this.renderer.apply(undefined,{f:this.f,pot:this.pot},1)
+	}
+	actu(){
+		this.calcVit.apply(this.k[0],{f:this.f,dx:this.dx,dim:this.dim,pot:this.pot})
+
+		this.addFrac.apply(this.inu,{a:this.f,b:this.k[0],r:0.5*this.dt})////inu=f+0.5k0
+		this.calcVit.apply(this.k[1],{f:this.inu,dx:this.dx,dim:this.dim,pot:this.pot})
+		//console.log(getTexel(200,202,this.inu.cache),getTexel(200,202,this.f.cache),getTexel(200,202,this.k[0].cache))
+
+		this.addFrac.apply(this.inu,{a:this.f,b:this.k[1],r:0.5*this.dt})//inu=f+0.5k1
+		this.calcVit.apply(this.k[2],{f:this.inu,dx:this.dx,dim:this.dim,pot:this.pot})
+		
+		this.addFrac.apply(this.inu,{a:this.f,b:this.k[2],r:1*this.dt})//inu=f+k2
+		this.calcVit.apply(this.k[3],{f:this.inu,dx:this.dx,dim:this.dim,pot:this.pot})
+		
+		//console.log("f",getTexel(202,200,this.f.cache))
+		//for(let i=0;i<4;i++)console.log(getTexel(202,200,this.k[i].cache))
+		
+		this.rungekutta.apply(this.f,{f:this.f,k0:this.k[0],k1:this.k[1],k2:this.k[2],k3:this.k[3],dt:1})
+		
+	}
+}
+function getSum(tex){
+	let rep=0;
+	let dx=1/(tex.width*tex.height)
+	for(let x=0;x<tex.width;x++){
+		for(let y=0;y<tex.height;y++){
+			let inu=getTexel(x,y,tex.cache)
+			rep+=dx*(inu[0]**2+inu[1]**2)
+		}
+	}
+	return rep
+}
+let go=0;
+let delta="float((pos.x-250)*(pos.x-250)+(pos.y-250)*(pos.y-250))/250.0/250.0"
+let f=new Field(1,1,`${delta}`)///
+f.aff()
+//console.log(getSum(f.f))
+function main(){
+	for(let i=0;i<10;i++)f.actu()
+	f.aff();
+	
+	if(!go) return;
+	window.requestAnimationFrame(main)
+}
+
+
+/*
+let a=new Tex(2)
+let b=new Tex(2)
+a.fill("vec2(42.0,31.0)")
+b.fill("vec2(1.0,0.3)")
+
+console.log(getTexel(200,202,a.cache),getTexel(200,202,b.cache))
+let w=new Tex(2)
+f.addFrac.apply(w,{a:a,b:b,r:0.5})
+console.log(getTexel(200,202,w.cache))
+*/
+
+</script>
+</body>   
+</html>
